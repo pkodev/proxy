@@ -26,39 +26,39 @@
 <h3>Файлы конфигурации</h3>
 <p>Если вы запускаете прокси-сервер на той же машине, что и GateServer, то GateServer должен быть запущен на внутреннем интерфейсе, а прокси-сервер на внешнем.</p>
 <p><b>GateServer.cfg</b></p>
-<pre>[ToClient]<br />
-IP = 127.0.0.1<br />
-Port = 1973<br />
+<pre>[ToClient]
+IP = 127.0.0.1
+Port = 1973
 CommEncrypt = 0</pre>
 <p><b>proxy.js</b></p>
-<pre>var config = {<br />
-	local: {<br />
-		host: '0.0.0.0',<br />
-		port: 1973<br />
-	},<br />
-	remote: {<br />
-		host: '127.0.0.1',<br />
-		port: 1973<br />
-	},<br />
-	realip: true<br />
+<pre>var config = {
+	local: {
+		host: '77.88.99.55', // Внешний Ip-адрес машины
+		port: 1973
+	},
+	remote: {
+		host: '127.0.0.1',
+		port: 1973
+	},
+	realip: true
 }</pre>
 <p>Если вы запускаете прокси-сервер на другой машине, то GateServer и прокси-сервер должны работать на внешних интерфейсах своих машин.</p>
 <p><b>GateServer.cfg</b></p>
-<pre>[ToClient]<br />
-IP = 0.0.0.0<br />
-Port = 1973<br />
+<pre>[ToClient]
+IP = 0.0.0.0
+Port = 1973
 CommEncrypt = 0</pre>
 <p><b>proxy.js</b></p>
-<pre>var config = {<br />
-	local: {<br />
-		host: '0.0.0.0',<br />
-		port: 1973<br />
-	},<br />
-	remote: {<br />
-		host: '77.88.99.55', // Ip-адрес машины с GateServer-ом. В клиентском ServerSet.bin должен быть именно он<br />
-		port: 1973<br />
-	},<br />
-	realip: true<br />
+<pre>var config = {
+	local: {
+		host: '0.0.0.0',
+		port: 1973
+	},
+	remote: {
+		host: '77.88.99.55', // Ip-адрес машины с GateServer-ом
+		port: 1973
+	},
+	realip: true
 }</pre>
 <p>Команда запуска сервера</p>
 <code>node proxy.js</code>
