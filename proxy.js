@@ -241,7 +241,7 @@ var server = net.createServer(function (socket) {
 					}
 					
 					// Проверка формата логина
-					var re = /^[0-9a-z]{5,20}$/;
+					var re = /^[0-9a-zA-Z]{5,20}$/;
 					if (!re.test(client.login)) {
 						return closeConnection(socket, remote, client, 'INVALID_LOGIN_FORMAT');
 					}
