@@ -17,12 +17,24 @@ var config = {
  * Подгрузка необходимых модулей
  */
 var net = require('net');
+var log4js = require('log4js');
+
+/**
+ * Логгер
+ */
+log4js.configure({
+  appenders: [
+    { type: 'console' },
+    { type: 'dateFile', filename: 'log/proxy.log', pattern: '-yyyy-MM-dd', category: '[PROXY]' }
+  ]
+});
+var logger = log4js.getLogger('[PROXY]');
 
 /**
  * Вывод ошибок в консоль
  */
 process.on('uncaughtException', function(err) {
-	console.log('Caught exception: ' + err);
+	logger.error('Caught exception', err);
 });
 
 /**
@@ -75,7 +87,7 @@ var server = net.createServer(function (socket) {
 			client.packets.amount[FSEC] = 1;
 		}
 		if(client.packets.amount[FSEC] > 64) {
-			return sendMessage(client, 'MANY_PACKETS');
+			return sendMessage(client, 'MANY_PACKETS', 'WARN');
 		}
 		
 		/**
@@ -89,7 +101,7 @@ var server = net.createServer(function (socket) {
 			client.packets.speed[FSEC] = packet_size;
 		}
 		if(client.packets.speed[FSEC] > 5120) {
-			return sendMessage(client, 'BIG_SPEED');
+			return sendMessage(client, 'BIG_SPEED', 'WARN');
 		}
 		
 		/**
@@ -103,6 +115,12 @@ var server = net.createServer(function (socket) {
 		 * 0002 - отправляется всегда, с кодом 11(17) когда перс в игре (у последнего битый размер...)
 		 * @see SC_CheckPing, PC_Ping, SC_Ping
 		 * @todo Проверить пинг-пакеты с шифрованием соединения (из-за шифрования они не попадают видимо в условия)
+		 * Примеры кривых пакетов при шифровании
+		 * 0002 0008 8000 0000 601e - неверный пакет
+		 * 0008 8000 0000 3379 0002 - неверный размер
+		 * 0008 8000 0000 2480 0002 - неверный размер
+		 * 0002 0008 8000 0000 56f1 - неверный пакет
+		 * 0008 8000 0000 4442 0002 - неверный размер
 		 */
 		if(hex == '0002' || hex == '00088000000000110002' || hex == '0008800000000011') {
 			
@@ -117,7 +135,7 @@ var server = net.createServer(function (socket) {
 		} else if (hex.substring(0, 12) == '000800000001') {
 			
 			//remote.write(data);
-			return closeConnection(socket, remote, client, 'LOGOUT');
+			return closeConnection(socket, remote, client, 'LOGOUT', 'INFO');
 			
 		/**
 		 * Левые пакеты
@@ -125,7 +143,7 @@ var server = net.createServer(function (socket) {
 		 */
 		} else if (hex.substring(4, 12) != '80000000') {
 		
-			return closeConnection(socket, remote, client, 'INVALID_PACKET');
+			return closeConnection(socket, remote, client, 'INVALID_PACKET', 'ERROR');
 			
 		/**
 		 * Другие пакеты
@@ -140,7 +158,7 @@ var server = net.createServer(function (socket) {
 			 * @see Пинг-пакеты
 			 */
 			if(info.size !== info.realsize) {
-				return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE');
+				return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE', 'ERROR');
 			}
 
 			/**
@@ -182,7 +200,7 @@ var server = net.createServer(function (socket) {
 				client.packets.actions[info.code][FSEC] = 1;
 			}
 			if(client.packets.actions[info.code][FSEC] > 3) {
-				return sendMessage(client, 'SAME_PACKETS');
+				return sendMessage(client, 'SAME_PACKETS', 'WARN');
 			}
 			
 			/**
@@ -224,29 +242,29 @@ var server = net.createServer(function (socket) {
 					if (pkt.psize !== 48 || pkt.msize !== 48 || 
 						pkt.passw.length !== 48 || pkt.mac.length !== 23 || pkt.login.length > 20 ||
 						pkt.lsize/2-1 !== pkt.login.length) {
-						return closeConnection(socket, remote, client, 'INVALID_LOGIN_SIZES');
+						return closeConnection(socket, remote, client, 'INVALID_LOGIN_SIZES', 'ERROR');
 					}
 					
 					// Проверка формата мак-адреса
 					var re = /^([0-9A-Z]{2}-){7}[0-9A-Z]{2}$/; // 00-25-22-DF-AC-79-00-00
 					if (!re.test(client.mac)) {
-						return closeConnection(socket, remote, client, 'INVALID_MAC_FORMAT');
+						return closeConnection(socket, remote, client, 'INVALID_MAC_FORMAT', 'ERROR');
 					}
 					
 					// Проверка формата пароля 
 					// @todo Бесполезно или не работает, видимо, проверить алгоритм шифрации 
 					var re = /^[0-9a-z]{48}$/; // 134b8fe72e7e9fcbe0b88b4b3c9c1347c09835507ebd4a61
 					if (!re.test(pkt.passw)) {
-						return closeConnection(socket, remote, client, 'INVALID_PASSW_FORMAT');
+						return closeConnection(socket, remote, client, 'INVALID_PASSW_FORMAT', 'ERROR');
 					}
 					
 					// Проверка формата логина
 					var re = /^[0-9a-zA-Z]{5,20}$/;
 					if (!re.test(client.login)) {
-						return closeConnection(socket, remote, client, 'INVALID_LOGIN_FORMAT');
+						return closeConnection(socket, remote, client, 'INVALID_LOGIN_FORMAT', 'ERROR');
 					}
 					
-					sendMessage(client, 'LOGIN');
+					sendMessage(client, 'LOGIN', 'INFO');
 						
 					// Модифицируем пакет, добавляя к мак-адресу ip клиента
 					if(config.realip) {
@@ -272,7 +290,7 @@ var server = net.createServer(function (socket) {
 					
 					// Пакет имеет фиксированный размер. Проверим это
 					if (hex.length !== 43 * 2) {
-						return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE_346');
+						return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE_346', 'ERROR');
 					}
 					
 					// Разбор пакета
@@ -282,13 +300,13 @@ var server = net.createServer(function (socket) {
 						
 					// Проверка заявленных длин реальным
 					if (pkt.psize !== 66 || pkt.pin.length !== 32) {
-						return closeConnection(socket, remote, client, 'INVALID_NEWPIN_SIZES');
+						return closeConnection(socket, remote, client, 'INVALID_NEWPIN_SIZES', 'ERROR');
 					}
 					
 					// Проверка формата пароля
 					var re = /^[0-9A-Z]{32}$/;
 					if (!re.test(pkt.pin)) {
-						return closeConnection(socket, remote, client, 'INVALID_NEWPIN_FORMAT');
+						return closeConnection(socket, remote, client, 'INVALID_NEWPIN_FORMAT', 'ERROR');
 					}
 					
 					remote.write(data);
@@ -308,7 +326,7 @@ var server = net.createServer(function (socket) {
 					
 					// Пакет имеет фиксированный размер. Проверим это
 					if (hex.length !== 78 * 2) {
-						return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE_347');
+						return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE_347', 'ERROR');
 					}
 					
 					// Разбор пакета
@@ -320,7 +338,7 @@ var server = net.createServer(function (socket) {
 					// Проверка форматов паролей
 					var re = /^[0-9A-Z]{32}$/;
 					if (!re.test(pkt.oldpin) || !re.test(pkt.newpin)) {
-						return closeConnection(socket, remote, client, 'INVALID_CHANGEPIN_FORMAT');
+						return closeConnection(socket, remote, client, 'INVALID_CHANGEPIN_FORMAT', 'ERROR');
 					}
 					
 					remote.write(data);
@@ -348,19 +366,19 @@ var server = net.createServer(function (socket) {
 						
 					// Проверка заявленных длин реальным
 					if (pkt.nsize/2-1 !== pkt.name.length || pkt.msize/2-1 !== pkt.map.length) {
-						return closeConnection(socket, remote, client, 'INVALID_NEWCHA_SIZES');
+						return closeConnection(socket, remote, client, 'INVALID_NEWCHA_SIZES', 'ERROR');
 					}
 					
 					// Проверка формата имени
 					var re = /^[0-9A-Za-z]{1,20}$/;
 					if (!re.test(pkt.name)) {
-						return closeConnection(socket, remote, client, 'INVALID_NEWCHA_NAME_FORMAT');
+						return closeConnection(socket, remote, client, 'INVALID_NEWCHA_NAME_FORMAT', 'ERROR');
 					}
 					
 					// Проверка формата карты
 					var re = /^[ A-Za-z]+$/;
 					if (!re.test(pkt.map)) {
-						return closeConnection(socket, remote, client, 'INVALID_NEWCHA_MAP_FORMAT');
+						return closeConnection(socket, remote, client, 'INVALID_NEWCHA_MAP_FORMAT', 'ERROR');
 					}
 					
 					remote.write(data);
@@ -391,19 +409,19 @@ var server = net.createServer(function (socket) {
 					if (pkt.nsize > 42 || pkt.name.length > 20 || pkt.psize !== 66 ||
 						pkt.nsize/2-1 !== pkt.name.length ||
 						pkt.pin.length !== 32) {
-						return closeConnection(socket, remote, client, 'INVALID_DELCHA_SIZES');
+						return closeConnection(socket, remote, client, 'INVALID_DELCHA_SIZES', 'ERROR');
 					}
 					
 					// Проверка формата имени
 					var re = /^[0-9A-Za-z]{1,20}$/;
 					if (!re.test(pkt.name)) {
-						return closeConnection(socket, remote, client, 'INVALID_DELCHA_NAME_FORMAT');
+						return closeConnection(socket, remote, client, 'INVALID_DELCHA_NAME_FORMAT', 'ERROR');
 					}
 					
 					// Проверка формата пароля
 					var re = /^[0-9A-Z]{32}$/;
 					if (!re.test(pkt.pin)) {
-						return closeConnection(socket, remote, client, 'INVALID_DELCHA_PIN_FORMAT');
+						return closeConnection(socket, remote, client, 'INVALID_DELCHA_PIN_FORMAT', 'ERROR');
 					}
 						
 					remote.write(data);
@@ -418,7 +436,7 @@ var server = net.createServer(function (socket) {
 					
 					// Пакет имеет фиксированный размер. Проверим это
 					if (hex.length !== 11 * 2) {
-						return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE_11');
+						return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE_11', 'ERROR');
 					}
 					
 					// Разбор пакета
@@ -429,14 +447,14 @@ var server = net.createServer(function (socket) {
 					
 					// Уровень скила не может быть отличен от 1
 					if (pkt.sklv !== 1) {
-						return closeConnection(socket, remote, client, 'INVALID_SKILL_LVL');
+						return closeConnection(socket, remote, client, 'INVALID_SKILL_LVL', 'ERROR');
 					}
 					
 					// Блочим изучение скилов в обход книг
 					// Посешн, РБ-скилы, Самоуничтожение, Кулинария, Анализ, Производство, Ремесло
 					switch (pkt.skid) {
 						case 280, 455, 456, 457, 458, 459, 311, 321, 322, 323, 324, 338, 339, 340, 341:
-							return closeConnection(socket, remote, client, 'INVALID_SKILL_ID');
+							return closeConnection(socket, remote, client, 'INVALID_SKILL_ID', 'ERROR');
 							break;
 						default:
 							remote.write(data);
@@ -535,7 +553,7 @@ var server = net.createServer(function (socket) {
 	
 }).listen(config.local.port, config.local.host, function(){
 	
-	console.log('ProxyServer accepting connection on %s:%d', config.local.host, config.local.port);
+	logger.info('ProxyServer accepting connection on %s:%d', config.local.host, config.local.port);
 	
 });
 
@@ -553,19 +571,29 @@ function getPacketInfo(hex) {
 }
 
 /**
- * Закрывает все соединения с сообщением в консоль
+ * Закрывает все соединения с сообщением в лог
  */
-function closeConnection(socket, remote, client, message) {
+function closeConnection(socket, remote, client, message, level) {
 	remote.end();
 	socket.end();
-	return sendMessage(client, message);
+	return sendMessage(client, message, level ? level : 'WARN');
 }
 
 /**
- * Выводит сообщение в консоль
+ * Логирует сообщения
  */
-function sendMessage(client, message) {
-	console.log(message, client.login, client.addr, client.port, client.mac);
+function sendMessage(client, message, level) {
+	switch (level) {
+		case 'WARN':
+			logger.warn(message, client.login, client.addr, client.port, client.mac);
+			break;
+		case 'ERROR':
+			logger.error(message, client.login, client.addr, client.port, client.mac);
+			break;
+		default:
+			logger.info(message, client.login, client.addr, client.port, client.mac);
+			break;
+	}
 	return true;
 }
 
