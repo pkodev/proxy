@@ -1,23 +1,13 @@
 /**
- * Конфигурация
- */
-var config = {
-	local: {
-		host: '0.0.0.0',
-		port: 1973
-	},
-	remote: {
-		host: '192.168.0.100',
-		port: 1973
-	},
-	realip: true, // Добавлять реальный ip-адрес к mac-адресу (true) или нет (false)
-}
-
-/**
- * Подгрузка необходимых модулей
+ * Загрузка необходимых модулей
  */
 var net = require('net');
 var log4js = require('log4js');
+
+/**
+ * Загрузка конфигурации
+ */
+var config = require('./config.json');
 
 /**
  * Логгер
@@ -86,7 +76,7 @@ var server = net.createServer(function (socket) {
 			client.packets.amount = {};
 			client.packets.amount[FSEC] = 1;
 		}
-		if(client.packets.amount[FSEC] > 64) {
+		if(client.packets.amount[FSEC] > config.maxpkts) {
 			return sendMessage(client, 'MANY_PACKETS', 'WARN');
 		}
 		
@@ -100,7 +90,7 @@ var server = net.createServer(function (socket) {
 			client.packets.speed = {};
 			client.packets.speed[FSEC] = packet_size;
 		}
-		if(client.packets.speed[FSEC] > 5120) {
+		if(client.packets.speed[FSEC] > config.maxspeed) {
 			return sendMessage(client, 'BIG_SPEED', 'WARN');
 		}
 		
@@ -109,10 +99,11 @@ var server = net.createServer(function (socket) {
 		 */
 		var buf = new Buffer(data);
 		var hex = buf.toString('hex');
+		var info = getPacketInfo(hex);
 		
 		/**
 		 * Пинг-пакеты
-		 * 0002 - отправляется всегда, с кодом 11(17) когда перс в игре (у последнего битый размер...)
+		 * 0002 - отправляется всегда, с кодом 11(17) когда перс в игре
 		 * @see SC_CheckPing, PC_Ping, SC_Ping
 		 * @todo Проверить пинг-пакеты с шифрованием соединения (из-за шифрования они не попадают видимо в условия)
 		 * Примеры кривых пакетов при шифровании
@@ -121,8 +112,17 @@ var server = net.createServer(function (socket) {
 		 * 0008 8000 0000 2480 0002 - неверный размер
 		 * 0002 0008 8000 0000 56f1 - неверный пакет
 		 * 0008 8000 0000 4442 0002 - неверный размер
+		 * 0008 8000 0000 e4e9 0002 - неверный пакет
+		 * 0008 8000 0000 4709 0008 8000 0000 4709 - неверный размер (отправился при зависании, склеились два логических в один физический)
+		 * Также при закликивании моба вылетает неверный размер
+		 * Склейка происходит при подбирании лута при ctrl+A (надо разбивать пакеты)
+		 * 
+		 * Кривые пакеты при выключенном шифровании
+		 * 0002 0008 8000 0000 0011 - неверный пакет (склеились два пинг пакета)
+		 * 
+		 * В общем, суть ясна. Пинг пакеты тоже надо расклеивать
 		 */
-		if(hex == '0002' || hex == '00088000000000110002' || hex == '0008800000000011') {
+		if(hex == '0002' || info.code == 17) {
 			
 			remote.write(data);
 			return;
@@ -132,7 +132,7 @@ var server = net.createServer(function (socket) {
 		 * Просто закрываем соединение без отправки пакета (т.е. эмулируем закрытие окна клиента). Теоретически, это должно исключить дюпы при ТП
 		 * @todo Надо протестировать
 		 */
-		} else if (hex.substring(0, 12) == '000800000001') {
+		} else if (info.signature == '00000001') {
 			
 			//remote.write(data);
 			return closeConnection(socket, remote, client, 'LOGOUT', 'INFO');
@@ -141,7 +141,7 @@ var server = net.createServer(function (socket) {
 		 * Левые пакеты
 		 * Просто рвем соединение
 		 */
-		} else if (hex.substring(4, 12) != '80000000') {
+		} else if (info.signature != '80000000') {
 		
 			return closeConnection(socket, remote, client, 'INVALID_PACKET', 'ERROR');
 			
@@ -149,14 +149,12 @@ var server = net.createServer(function (socket) {
 		 * Другие пакеты
 		 */
 		} else {
-			
-			var info = getPacketInfo(hex);
-	
+				
 			/**
-			 * Проверяем размер пакета (указанный в пакете с реальным)
-			 * @todo Убрать пока либо понять на каких пакетах это не работает, либо не рвать соединение
-			 * @see Пинг-пакеты
-			 */
+			* Проверяем размер пакета (указанный в пакете с реальным)
+			* @todo Убрать пока либо понять на каких пакетах это не работает, либо не рвать соединение
+			* @see Пинг-пакеты
+			*/
 			if(info.size !== info.realsize) {
 				return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE', 'ERROR');
 			}
@@ -187,19 +185,39 @@ var server = net.createServer(function (socket) {
 				177E	Удалить из друзей
 				1780	Информация о друге
 				1781	Изменить перс. инфо (motto, icon)
-			 */
+			*/
 			
 			/**
 			 * Проверяем частоту передачи пакетов одного типа в сек
+			 * У пакета действий определяем поддействие
+			 * 0100 - перемещение
+			 * 0202 - атака
+			 * 0c00 - перемещение предметов в инвентаре
+			 * 0b00 - использование предмета из инвентаря
 			 */
-			if(client.packets.actions[info.code] && client.packets.actions[info.code][FSEC]) {
-				client.packets.actions[info.code][FSEC] += 1;
+			var pcode = info.code;
+			var limit = config.maxsames;
+			if(info.code == 6) {
+				var subcode = parseInt(info.body.substring(16, 20), 16);
+				pcode = 'a' + subcode;
+				/**
+				 * Для пакета перемещения увеличиваем лимит в 3 раза из-за того, что при перемещении 
+				 * клиент всегда ждет в ответ определенный пакет и если он не приходит, то начинает 
+				 * виснуть и перестает отправлять другие пакеты пока не получит свой
+				 * @todo Подумать насчет возврата "нужного" пакета
+				 */
+				if(subcode == 256) {
+					limit = config.maxsames * 3;
+				}
+			}
+			if(client.packets.actions[pcode] && client.packets.actions[pcode][FSEC]) {
+				client.packets.actions[pcode][FSEC] += 1;
 			} else {
 				client.packets.actions = {};
-				client.packets.actions[info.code] = {};
-				client.packets.actions[info.code][FSEC] = 1;
+				client.packets.actions[pcode] = {};
+				client.packets.actions[pcode][FSEC] = 1;
 			}
-			if(client.packets.actions[info.code][FSEC] > 3) {
+			if(client.packets.actions[pcode][FSEC] > limit) {
 				return sendMessage(client, 'SAME_PACKETS', 'WARN');
 			}
 			
@@ -221,19 +239,19 @@ var server = net.createServer(function (socket) {
 				case 431:
 					
 					// Разбор пакета
-					var shift = 34;
+					var shift = 18;
 					var pkt = { 
-						lsize: parseInt(hex.substring(shift, shift + 4), 16) * 2 };
+						lsize: parseInt(info.body.substring(shift, shift + 4), 16) * 2 };
 						shift += 4;
-					pkt.login = hex2str(hex.substring(shift, shift + pkt.lsize - 2));
+					pkt.login = hex2str(info.body.substring(shift, shift + pkt.lsize - 2));
 						shift += pkt.lsize ;
-					pkt.psize = parseInt(hex.substring(shift, shift + 4), 16) * 2;
+					pkt.psize = parseInt(info.body.substring(shift, shift + 4), 16) * 2;
 						shift += 4;
-					pkt.passw = hex.substring(shift, shift + pkt.psize);
+					pkt.passw = info.body.substring(shift, shift + pkt.psize);
 						shift += pkt.psize;
-					pkt.msize = parseInt(hex.substring(shift, shift + 4), 16) * 2;
+					pkt.msize = parseInt(info.body.substring(shift, shift + 4), 16) * 2;
 						shift += 4;
-					pkt.mac = hex2str(hex.substring(shift, shift + pkt.msize - 2));
+					pkt.mac = hex2str(info.body.substring(shift, shift + pkt.msize - 2));
 					
 					client.login = pkt.login;
 					client.mac = pkt.mac;
@@ -275,7 +293,7 @@ var server = net.createServer(function (socket) {
 							new_pkt = int2hex(new_pkt.length / 2 + 2) + new_pkt;
 						data = new Buffer(new_pkt, 'hex');
 					}
-					
+						
 					remote.write(data);
 					
 					break;
@@ -289,7 +307,7 @@ var server = net.createServer(function (socket) {
 				case 346:
 					
 					// Пакет имеет фиксированный размер. Проверим это
-					if (hex.length !== 43 * 2) {
+					if (info.size !== 43) {
 						return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE_346', 'ERROR');
 					}
 					
@@ -325,7 +343,7 @@ var server = net.createServer(function (socket) {
 				case 347:
 					
 					// Пакет имеет фиксированный размер. Проверим это
-					if (hex.length !== 78 * 2) {
+					if (info.size !== 78) {
 						return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE_347', 'ERROR');
 					}
 					
@@ -393,7 +411,7 @@ var server = net.createServer(function (socket) {
 				 * 4638 3833 4500                           F883E.
 				 */
 				case 436:
-					
+				
 					// Разбор пакета
 					var shift = 0;
 					var pkt = { 
@@ -435,7 +453,7 @@ var server = net.createServer(function (socket) {
 				case 11:
 					
 					// Пакет имеет фиксированный размер. Проверим это
-					if (hex.length !== 11 * 2) {
+					if (info.size !== 11) {
 						return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE_11', 'ERROR');
 					}
 					
@@ -470,10 +488,8 @@ var server = net.createServer(function (socket) {
 					break;
 				
 			}
-			
-		}
 		
-		//console.log(hex);
+		}
 		
 	});
 	
@@ -482,7 +498,7 @@ var server = net.createServer(function (socket) {
 	});
 	
 	remote.on('error', function (e) {
-		console.log(e.toString());
+		logger.error(e.toString());
 		socket.end();
 	});
 	
@@ -559,15 +575,17 @@ var server = net.createServer(function (socket) {
 
 /**
  * Возвращает базовую информацию о hex-пакете
+ * Если содержится несколько логических пакетов, берем только первый
  */
 function getPacketInfo(hex) {
-	return {
+	var packet = {
 		size: parseInt(hex.substring(0, 4), 16),
 		signature: hex.substring(4, 12),
-		code: parseInt(hex.substring(12, 16), 16),
-		realsize: hex.length/2,
-		body: hex.substring(16)
+		code: parseInt(hex.substring(12, 16), 16) 
 	}
+		packet.body = hex.substring(16,packet.size * 2);
+		packet.realsize = packet.body.length / 2 + 8;
+	return packet;
 }
 
 /**
