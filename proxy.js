@@ -33,6 +33,11 @@ process.on('uncaughtException', function(err) {
 var server = net.createServer(function (socket) {
 	
 	/**
+	 * Максимальное кол-во соединений (ставим как в GateServer-е)
+	 */
+	server.maxConnections = 1500;
+	
+	/**
 	 * Инициализируем объект клиента
 	 */
 	var client = {
@@ -40,6 +45,8 @@ var server = net.createServer(function (socket) {
 		port: socket.remotePort,
 		key: false,
 		sesskey: false,
+		login: false,
+		mac: false,
 		packets: {
 			amount: {},
 			speed: {},
@@ -50,10 +57,17 @@ var server = net.createServer(function (socket) {
 	/**
 	 * Инициализируем соединение с GateServer-ом
 	 */
-	
 	var remote = new net.Socket();
-		
 	remote.connect(config.remote.port, config.remote.host);
+	
+	/**
+	 * Ожидание пакета авторизации после установки соединения
+	 */
+	setTimeout(function () {  
+		if(!client.login) {
+			closeConnection(socket,remote);
+		}
+	}, config.timeout * 1000);
 
 	/**
 	 * Обрабатываем входящие пакеты
@@ -105,22 +119,6 @@ var server = net.createServer(function (socket) {
 		 * Пинг-пакеты
 		 * 0002 - отправляется всегда, с кодом 11(17) когда перс в игре
 		 * @see SC_CheckPing, PC_Ping, SC_Ping
-		 * @todo Проверить пинг-пакеты с шифрованием соединения (из-за шифрования они не попадают видимо в условия)
-		 * Примеры кривых пакетов при шифровании
-		 * 0002 0008 8000 0000 601e - неверный пакет
-		 * 0008 8000 0000 3379 0002 - неверный размер
-		 * 0008 8000 0000 2480 0002 - неверный размер
-		 * 0002 0008 8000 0000 56f1 - неверный пакет
-		 * 0008 8000 0000 4442 0002 - неверный размер
-		 * 0008 8000 0000 e4e9 0002 - неверный пакет
-		 * 0008 8000 0000 4709 0008 8000 0000 4709 - неверный размер (отправился при зависании, склеились два логических в один физический)
-		 * Также при закликивании моба вылетает неверный размер
-		 * Склейка происходит при подбирании лута при ctrl+A (надо разбивать пакеты)
-		 * 
-		 * Кривые пакеты при выключенном шифровании
-		 * 0002 0008 8000 0000 0011 - неверный пакет (склеились два пинг пакета)
-		 * 
-		 * В общем, суть ясна. Пинг пакеты тоже надо расклеивать
 		 */
 		if(hex == '0002' || info.code == 17) {
 			
@@ -151,10 +149,8 @@ var server = net.createServer(function (socket) {
 		} else {
 				
 			/**
-			* Проверяем размер пакета (указанный в пакете с реальным)
-			* @todo Убрать пока либо понять на каких пакетах это не работает, либо не рвать соединение
-			* @see Пинг-пакеты
-			*/
+			 * Проверяем размер пакета (указанный в пакете с реальным)
+			 */
 			if(info.size !== info.realsize) {
 				return closeConnection(socket, remote, client, 'INVALID_PACKET_SIZE', 'ERROR');
 			}
@@ -364,6 +360,34 @@ var server = net.createServer(function (socket) {
 					break;
 					
 				/**
+				 * Вход на персонажа
+				 * xxxx xxxx 0014 8000 0000 01b1 000a 4265  .6J...........Be
+				 * 7461 5465 7374 3300                      taTest3.
+				 * @todo Поставить более мягкую проверку для возможности изменения имени через базу (напр. [GM]Вася)
+				 */
+				case 433:
+					
+					// Разбор пакета
+					var pkt = { 
+						nsize: parseInt(info.body.substring(0, 4), 16) * 2 };
+						pkt.name = hex2str(info.body.substring(4, 4 + pkt.nsize - 2));
+						
+					// Проверка заявленных длин реальным
+					if (pkt.nsize/2-1 !== pkt.name.length) {
+						return closeConnection(socket, remote, client, 'INVALID_CHA_ENTER_SIZES', 'ERROR');
+					}
+						
+					// Проверка формата имени
+					var re = /^[0-9a-zA-Z]{1,20}$/;
+					if (!re.test(pkt.name)) {
+						//return closeConnection(socket, remote, client, 'INVALID_CHA_ENTER_FORMAT', 'ERROR');
+					}
+						
+					remote.write(data);
+					
+					break;
+					
+				/**
 				 * Пакет создания персонажа
 				 * xxxx xxxx 067b 8000 0000 01b3 0005 5265  .o.A.{........Re
 				 * 6e64 0000 0e49 6369 636c 6520 4361 7374  nd...Icicle.Cast
@@ -481,6 +505,149 @@ var server = net.createServer(function (socket) {
 					
 					break;
 					
+				/**
+				 * Создание гильдии
+				 * xxxx xxxx 0017 8000 0000 0191 0100 0554  ...U...........T
+				 * 6573 7400 0005 7465 7374 00              est...test.
+				 * @todo При создании перса лимит пароля 8 символов, при роспуске 12
+				 * Проходит любой пароль кроме символов ' и ;
+				 * @todo Проверить, достаточно ли фильтрации только имени гильдии
+				 */
+				case 401:
+					
+					// Разбор пакета
+					var pkt = { 
+						nsize: parseInt(info.body.substring(0, 4), 16) * 2 };
+						pkt.name = hex2str(info.body.substring(4, 4 + pkt.nsize - 2));
+						
+					// Проверка заявленных длин реальным
+					if (pkt.nsize/2-1 !== pkt.name.length) {
+						return closeConnection(socket, remote, client, 'INVALID_GUILD_NEW_SIZES', 'ERROR');
+					}
+						
+					// Проверка формата имени 
+					var re = /^[0-9a-zA-Z]{1,16}$/;
+					if (!re.test(pkt.name)) {
+						return closeConnection(socket, remote, client, 'INVALID_GUILD_NEW_NAME_FORMAT', 'ERROR');
+					}
+						
+					remote.write(data);
+					
+					break;
+					
+				/**
+				 * Роспуск гильдии
+				 * xxxx xxxx 0017 8000 0000 0199 000d 3132  ..]o..........12
+				 * 3334 3536 3738 3930 3132 00              3456789012.
+				 * @todo При создании перса лимит пароля 8 символов, при роспуске 12
+				 * @todo Сделать возврат сообщения вместо разрыва соединения
+				 */
+				case 409:
+					
+					// Разбор пакета
+					var pkt = { 
+						psize: parseInt(info.body.substring(0, 4), 16) * 2 };
+						pkt.passw = hex2str(info.body.substring(4, 4 + pkt.psize - 2));
+						
+					// Проверка заявленных длин реальным
+					if (pkt.psize/2-1 !== pkt.passw.length) {
+						return closeConnection(socket, remote, client, 'INVALID_GUILD_DEL_PASSW_SIZES', 'ERROR');
+					}
+						
+					// Проверка формата пароля 
+					var re = /^[^';]{1,12}$/;
+					if (!re.test(pkt.passw)) {
+						return closeConnection(socket, remote, client, 'INVALID_GUILD_DEL_PASSW_FORMAT', 'ERROR');
+					}
+						
+					remote.write(data);
+					
+					break;
+					
+				/**
+				 * Motto гильдии
+				 * xxxx xxxx 0013 8000 0000 019a 0009 4d65  ..6...........Me
+				 * 6761 5465 7374 00                        gaTest.
+				 */
+				case 410:
+					
+					// Разбор пакета
+					var pkt = { 
+						msize: parseInt(info.body.substring(0, 4), 16) * 2 };
+						pkt.motto = hex2str(info.body.substring(4, 4 + pkt.msize - 2));
+						
+					// Проверка заявленных длин реальным
+					if (pkt.msize/2-1 !== pkt.motto.length) {
+						return closeConnection(socket, remote, client, 'INVALID_GUILD_MOTTO_SIZES', 'ERROR');
+					}
+						
+					// Проверка формата motto 
+					var re = /^[0-9a-zA-Z]{0,30}$/;
+					if (!re.test(pkt.motto)) {
+						return closeConnection(socket, remote, client, 'INVALID_GUILD_MOTTO_FORMAT', 'ERROR');
+					}
+						
+					remote.write(data);
+					
+					break;
+					
+				/**
+				 * Motto персонажа
+				 * xxxx xxxx 0016 8000 0000 1781 0009 4d65  ..............Me
+				 * 6761 5465 7374 0000 0300                 gaTest....
+				 */
+				case 6017:
+					
+					// Разбор пакета
+					var pkt = { 
+						msize: parseInt(info.body.substring(0, 4), 16) * 2 };
+						pkt.motto = hex2str(info.body.substring(4, 4 + pkt.msize - 2));
+						
+					// Проверка заявленных длин реальным
+					if (pkt.msize/2-1 !== pkt.motto.length) {
+						return closeConnection(socket, remote, client, 'INVALID_CHA_MOTTO_SIZES', 'ERROR');
+					}
+						
+					// Проверка формата motto 
+					var re = /^[0-9a-zA-Z]{0,16}$/;
+					if (!re.test(pkt.motto)) {
+						return closeConnection(socket, remote, client, 'INVALID_CHA_MOTTO_FORMAT', 'ERROR');
+					}
+						
+					remote.write(data);
+					
+					break;
+					
+				/**
+				 * Поиск персонажа для добавления в друзья
+				 * xxxx xxxx 000f 8000 0000 177b 0005 5265  ../........{..Re
+				 * 6e64 00                                  nd.
+				 * @todo При создании перса лимит имени 20 символов, при поиске 17
+				 * @todo Мб убрать вообще проверку этого пакета, т.к. поиск идет только в памяти
+				 */
+				case 6011:
+					
+					// Разбор пакета
+					var pkt = { 
+						nsize: parseInt(info.body.substring(0, 4), 16) * 2 };
+						pkt.name = hex2str(info.body.substring(4, 4 + pkt.nsize - 2));
+						
+					// Проверка заявленных длин реальным
+					if (pkt.nsize/2-1 !== pkt.name.length) {
+						return closeConnection(socket, remote, client, 'INVALID_CHA_FIND_SIZES', 'ERROR');
+					}
+						
+					// Проверка формата имени 
+					//var re = /^[0-9a-zA-Z]{1,17}$/;
+					var re = /^[0-9a-zA-Z]{1,20}$/;
+					if (!re.test(pkt.name)) {
+						return closeConnection(socket, remote, client, 'INVALID_CHA_FIND_FORMAT', 'ERROR');
+					}
+						
+					remote.write(data);
+					
+					break;
+					
 				default:
 					
 					remote.write(data);
@@ -494,12 +661,11 @@ var server = net.createServer(function (socket) {
 	});
 	
 	socket.on('error', function (e) {
-		remote.end();
+		closeConnection(socket, remote, client, logger.error(e.toString()), 'ERROR');
 	});
 	
 	remote.on('error', function (e) {
-		logger.error(e.toString());
-		socket.end();
+		closeConnection(socket, remote, client, logger.error(e.toString()), 'ERROR');
 	});
 	
 	/**
@@ -559,11 +725,11 @@ var server = net.createServer(function (socket) {
 		socket.write(data);
 	});
 	
-	socket.on('close', function(had_error) {
+	socket.on('close', function(e) {
 		remote.end();
 	});
 	
-	remote.on('close', function(had_error) {
+	remote.on('close', function(e) {
 		socket.end();
 	});
 	
@@ -576,6 +742,7 @@ var server = net.createServer(function (socket) {
 /**
  * Возвращает базовую информацию о hex-пакете
  * Если содержится несколько логических пакетов, берем только первый
+ * Не расклеился пакет вида 0002 0008 8000 0000 0011
  */
 function getPacketInfo(hex) {
 	var packet = {
@@ -589,12 +756,12 @@ function getPacketInfo(hex) {
 }
 
 /**
- * Закрывает все соединения с сообщением в лог
+ * Закрывает все соединения с сообщением в лог (если передан клиент и сообщение)
  */
 function closeConnection(socket, remote, client, message, level) {
 	remote.end();
 	socket.end();
-	return sendMessage(client, message, level ? level : 'WARN');
+	return client && message ? sendMessage(client, message, level ? level : 'WARN') : true;
 }
 
 /**
