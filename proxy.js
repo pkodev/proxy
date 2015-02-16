@@ -28,6 +28,11 @@ process.on('uncaughtException', function(err) {
 });
 
 /**
+ * Объект текущих соединений
+ */
+var connections = {};
+
+/**
  * Запуск сервера
  */
 var server = net.createServer(function (socket) {
@@ -53,6 +58,44 @@ var server = net.createServer(function (socket) {
 			actions: {}
 		}
 	}
+	
+	/**
+	 * Регистрируем клиентское соединение
+	 */
+	connections[client.addr] = connections[client.addr] ? connections[client.addr] + 1 : 1;
+	
+	/**
+	 * Ограничение кол-ва одновременных соединений с одного IP
+	 * @todo Попробовать вернуть сообщение
+	 * @todo Также дергается on('error') и в лог пишется еще ошибка. А если сделать return отсюда, то не срабатывает on('end')
+	 * @todo CloseConnection использовать нельзя, т.к. мы режем соединение до коннекта к GateServer-у
+	 */
+	if(connections[client.addr] > config.maxcon) {
+		socket.end();
+		sendMessage(client, 'MORE_THAN_MAX_CONNECTIONS', 'ERROR');
+	}
+	
+	/**
+	 * Блокировка по IP-адресу
+	 * @todo Попробовать вернуть сообщение
+	 * @todo Продублировать после соединения с гейтом для блокировки в реальном времени
+	 */
+	if(client.addr == 'sfasfas') {
+		socket.end();
+		sendMessage(client, 'BLACKLIST_IP', 'ERROR');
+	}
+	
+	/**
+	 * Блокировка по mac-адресу
+	 * @todo Попробовать вернуть сообщение
+	 * @todo mac-адрес мы узнаем только в момент авторизации
+	 */
+	
+	/**
+	 * Блокировка по имени пользователя
+	 * @todo Попробовать вернуть сообщение
+	 * @todo Логин мы узнаем только в момент авторизации. Учесть регистр
+	 */
 	
 	/**
 	 * Инициализируем соединение с GateServer-ом
@@ -266,8 +309,7 @@ var server = net.createServer(function (socket) {
 					}
 					
 					// Проверка формата пароля 
-					// @todo Бесполезно или не работает, видимо, проверить алгоритм шифрации 
-					var re = /^[0-9a-z]{48}$/; // 134b8fe72e7e9fcbe0b88b4b3c9c1347c09835507ebd4a61
+					var re = /^[0-9a-z]{48}$/; // 685ad3bd93f265ce50b94ac314120e363bcb4d0df499d166
 					if (!re.test(pkt.passw)) {
 						return closeConnection(socket, remote, client, 'INVALID_PASSW_FORMAT', 'ERROR');
 					}
@@ -433,6 +475,7 @@ var server = net.createServer(function (socket) {
 				 * 6e64 0000 2145 3130 4144 4333 3934 3942  nd..!E10ADC3949B
 				 * 4135 3941 4242 4535 3645 3035 3746 3230  A59ABBE56E057F20
 				 * 4638 3833 4500                           F883E.
+				 * @todo Поставить более мягкую проверку для возможности изменения имени через базу (напр. [GM]Вася)
 				 */
 				case 436:
 				
@@ -510,7 +553,7 @@ var server = net.createServer(function (socket) {
 				 * xxxx xxxx 0017 8000 0000 0191 0100 0554  ...U...........T
 				 * 6573 7400 0005 7465 7374 00              est...test.
 				 * @todo При создании перса лимит пароля 8 символов, при роспуске 12
-				 * Проходит любой пароль кроме символов ' и ;
+				 * Проходит любой пароль кроме символов ' и ; (т.е. пароль фильтруется по умолчанию)
 				 * @todo Проверить, достаточно ли фильтрации только имени гильдии
 				 */
 				case 401:
@@ -539,7 +582,7 @@ var server = net.createServer(function (socket) {
 				 * Роспуск гильдии
 				 * xxxx xxxx 0017 8000 0000 0199 000d 3132  ..]o..........12
 				 * 3334 3536 3738 3930 3132 00              3456789012.
-				 * @todo При создании перса лимит пароля 8 символов, при роспуске 12
+				 * @todo При создании гильдии лимит пароля 8 символов, при роспуске 12
 				 * @todo Сделать возврат сообщения вместо разрыва соединения
 				 */
 				case 409:
@@ -731,6 +774,10 @@ var server = net.createServer(function (socket) {
 	
 	remote.on('close', function(e) {
 		socket.end();
+	});
+	
+	socket.on('end', function(e) {
+		connections[client.addr] = connections[client.addr] - 1;
 	});
 	
 }).listen(config.local.port, config.local.host, function(){
