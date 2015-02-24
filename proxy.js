@@ -3,6 +3,7 @@
  */
 var net = require('net');
 var log4js = require('log4js');
+var fs = require('fs');
 
 /**
  * Загрузка конфигурации
@@ -10,7 +11,7 @@ var log4js = require('log4js');
 var config = require('./config.json');
 
 /**
- * Логгер
+ * Логгеры
  */
 log4js.configure({
   appenders: [
@@ -30,7 +31,20 @@ process.on('uncaughtException', function(err) {
 /**
  * Объект текущих соединений
  */
-var connections = {};
+var connections = {}
+
+/**
+ * Объект списков блокировок
+ */
+var denylist = getBlackList()
+
+/**
+ * Периодическое обновление установленных переменных
+ */
+setInterval(function(){
+	// Подгрузка черных списков
+	denylist = getBlackList()
+}, 1000);
 
 /**
  * Запуск сервера
@@ -51,12 +65,22 @@ var server = net.createServer(function (socket) {
 		key: false,
 		sesskey: false,
 		login: false,
+		chaname: false,
 		mac: false,
 		packets: {
 			amount: {},
 			speed: {},
 			actions: {}
 		}
+	}
+	
+	/**
+	 * Блокировка по IP-адресу в момент соединения
+	 * @todo Попробовать вернуть сообщение
+	 */
+	if(denylist.ips[client.addr]) {
+		socket.end();
+		return sendMessage(client, 'BLACKLIST_IP', 'ERROR');
 	}
 	
 	/**
@@ -74,28 +98,6 @@ var server = net.createServer(function (socket) {
 		socket.end();
 		sendMessage(client, 'MORE_THAN_MAX_CONNECTIONS', 'ERROR');
 	}
-	
-	/**
-	 * Блокировка по IP-адресу
-	 * @todo Попробовать вернуть сообщение
-	 * @todo Продублировать после соединения с гейтом для блокировки в реальном времени
-	 */
-	if(client.addr == 'sfasfas') {
-		socket.end();
-		sendMessage(client, 'BLACKLIST_IP', 'ERROR');
-	}
-	
-	/**
-	 * Блокировка по mac-адресу
-	 * @todo Попробовать вернуть сообщение
-	 * @todo mac-адрес мы узнаем только в момент авторизации
-	 */
-	
-	/**
-	 * Блокировка по имени пользователя
-	 * @todo Попробовать вернуть сообщение
-	 * @todo Логин мы узнаем только в момент авторизации. Учесть регистр
-	 */
 	
 	/**
 	 * Инициализируем соединение с GateServer-ом
@@ -119,8 +121,25 @@ var server = net.createServer(function (socket) {
 	socket.on('data', function(data) {
 		
 		/**
-		* Регистрируем таймеры
-		*/
+		 * Блокировки при установленном соединении
+		 * @todo Попробовать вернуть сообщение
+		 * @see Отдельные блокировки см. при разборе пакета авторизации
+		 */
+		if(denylist.ips[client.addr]) {
+			return closeConnection(socket, remote, client, 'BLACKLIST_IP', 'ERROR');
+		}
+		if(denylist.macs[client.mac]) {
+			return closeConnection(socket, remote, client, 'BLACKLIST_MAC', 'ERROR');
+		}
+		if(denylist.logins[client.login]) {
+			return closeConnection(socket, remote, client, 'BLACKLIST_LOGIN', 'ERROR');
+		}
+		if(denylist.chars[client.chaname]) {
+			return closeConnection(socket, remote, client, 'BLACKLIST_CHAR', 'ERROR');
+		}
+		/**
+		 * Регистрируем таймеры
+		 */
 		var MSEC = new Date().getTime(); // UNIXTIME в миллисекундах
 		var FSEC = Math.round(MSEC / 1000); // UNIXTIME в секундах
 		
@@ -163,7 +182,7 @@ var server = net.createServer(function (socket) {
 		 * 0002 - отправляется всегда, с кодом 11(17) когда перс в игре
 		 * @see SC_CheckPing, PC_Ping, SC_Ping
 		 */
-		if(hex == '0002' || info.code == 17) {
+		if(hex === '0002' || info.code === 17) {
 			
 			remote.write(data);
 			return;
@@ -173,7 +192,7 @@ var server = net.createServer(function (socket) {
 		 * Просто закрываем соединение без отправки пакета (т.е. эмулируем закрытие окна клиента). Теоретически, это должно исключить дюпы при ТП
 		 * @todo Надо протестировать
 		 */
-		} else if (info.signature == '00000001') {
+		} else if (info.signature === '00000001') {
 			
 			//remote.write(data);
 			return closeConnection(socket, remote, client, 'LOGOUT', 'INFO');
@@ -182,7 +201,7 @@ var server = net.createServer(function (socket) {
 		 * Левые пакеты
 		 * Просто рвем соединение
 		 */
-		} else if (info.signature != '80000000') {
+		} else if (info.signature !== '80000000') {
 		
 			return closeConnection(socket, remote, client, 'INVALID_PACKET', 'ERROR');
 			
@@ -236,7 +255,7 @@ var server = net.createServer(function (socket) {
 			 */
 			var pcode = info.code;
 			var limit = config.maxsames;
-			if(info.code == 6) {
+			if(info.code === 6) {
 				var subcode = parseInt(info.body.substring(16, 20), 16);
 				pcode = 'a' + subcode;
 				/**
@@ -245,7 +264,7 @@ var server = net.createServer(function (socket) {
 				 * виснуть и перестает отправлять другие пакеты пока не получит свой
 				 * @todo Подумать насчет возврата "нужного" пакета
 				 */
-				if(subcode == 256) {
+				if(subcode === 256) {
 					limit = config.maxsames * 3;
 				}
 			}
@@ -292,8 +311,18 @@ var server = net.createServer(function (socket) {
 						shift += 4;
 					pkt.mac = hex2str(info.body.substring(shift, shift + pkt.msize - 2));
 					
-					client.login = pkt.login;
+					client.login = pkt.login.toLowerCase();
 					client.mac = pkt.mac;
+					
+					// Блокировка по mac-адресу @todo В клиенте не выскакивает окно о разрыве соединения...
+					if(denylist.macs[client.mac]) {
+						return closeConnection(socket, remote, client, 'BLACKLIST_MAC', 'ERROR');
+					}
+					
+					// Блокировка по логину @todo В клиенте не выскакивает окно о разрыве соединения...
+					if(denylist.logins[client.login]) {
+						return closeConnection(socket, remote, client, 'BLACKLIST_LOGIN', 'ERROR');
+					}
 					
 					// Проверка заявленных длин реальным
 					if (pkt.psize !== 48 || pkt.msize !== 48 || 
@@ -413,6 +442,13 @@ var server = net.createServer(function (socket) {
 					var pkt = { 
 						nsize: parseInt(info.body.substring(0, 4), 16) * 2 };
 						pkt.name = hex2str(info.body.substring(4, 4 + pkt.nsize - 2));
+						
+					client.chaname = pkt.name;
+					
+					// Блокировка по имени персонажа
+					if(denylist.chars[client.chaname.toLowerCase()]) {
+						return closeConnection(socket, remote, client, 'BLACKLIST_CHAR', 'ERROR');
+					}
 						
 					// Проверка заявленных длин реальным
 					if (pkt.nsize/2-1 !== pkt.name.length) {
@@ -536,9 +572,9 @@ var server = net.createServer(function (socket) {
 					}
 					
 					// Блочим изучение скилов в обход книг
-					// Посешн, РБ-скилы, Самоуничтожение, Кулинария, Анализ, Производство, Ремесло
+					// Место, Посешн, РБ-скилы, Самоуничтожение, Кулинария, Анализ, Производство, Ремесло
 					switch (pkt.skid) {
-						case 280, 455, 456, 457, 458, 459, 311, 321, 322, 323, 324, 338, 339, 340, 341:
+						case 202, 280, 455, 456, 457, 458, 459, 311, 321, 322, 323, 324, 338, 339, 340, 341:
 							return closeConnection(socket, remote, client, 'INVALID_SKILL_ID', 'ERROR');
 							break;
 						default:
@@ -850,4 +886,107 @@ function str2hex(str) {
 	return new Buffer(str).toString('hex');
 }
 
+/**
+ * Возвращает список блокировок по типу
+ */
+function getBlack(type) {
+	var rows = {};
+	var lines = fs.readFileSync(__dirname + '/denylist/' + type + '.txt', { encoding: 'utf8' }).trim().split('\n')
+	lines.forEach(function (line) { 
+		rows[line.trim().toLowerCase()] = true;
+	});
+	return rows;
+}
+
+/**
+ * Возвращает объект всех блокировок
+ */
+function getBlackList() {
+	return {
+		logins: getBlack('logins'),
+		chars: getBlack('chars'),
+		ips: getBlack('ips'),
+		macs: getBlack('macs')
+	}
+}
+
+/**
+ * Запускаем веб-сервер
+ * @todo Сделать отдельным модулем и добавить в конфиг
+ */
+
+var express = require('express');
+var app = express();
+var swig = require('swig');
+var bodyParser = require('body-parser');
+var postParser = bodyParser.urlencoded({ extended: false })
+
+app.engine('html', swig.renderFile);
+app.set('view engine', 'html');
+app.set('views', __dirname + '/views');
+app.set('view cache', false);
+swig.setDefaults({ cache: false });
+
+app.listen(3000, '127.0.0.1', function () {
+	logger.info('WebServer accepting connection on %s:%d', '127.0.0.1', 3000);
+});
+
+/**
+ * Главная страница
+ */
+app.get('/', function (req, res) {
+	res.render('index', { 
+		settings: config,
+		denylist: {
+			logins: fs.readFileSync(__dirname + '/denylist/logins.txt', { encoding: 'utf8' }),
+			chars: fs.readFileSync(__dirname + '/denylist/chars.txt', { encoding: 'utf8' }),
+			ips: fs.readFileSync(__dirname + '/denylist/ips.txt', { encoding: 'utf8' }),
+			macs: fs.readFileSync(__dirname + '/denylist/macs.txt', { encoding: 'utf8' })
+		},
+		logs: fs.readdirSync(__dirname + '/log/').sort()
+	});
+});
+
+/**
+ * Возврат лога
+ */
+app.get('/log/:logdate/:lastline/', function (req, res) {
+	var lines = fs.readFileSync(__dirname + '/log/' + req.params.logdate, { encoding: 'utf8' })
+		.split('\n');
+	var expr = /^\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+-\s+(.*)?/;
+	var rows = [];
+	lines.forEach(function (line) { 
+		var matches = expr.exec(line);
+		if(matches !== null) {
+			rows.push({
+				date: matches[1],
+				type: matches[2],
+				category: matches[3],
+				message: matches[4]
+			});
+		}
+	});
+	res.json(rows.slice(parseInt(req.params.lastline)))
+});
+
+/**
+ * Сохранение списков блокировок
+ */
+app.post('/denylist/', postParser, function (req, res) {
+	fs.writeFileSync(__dirname + '/denylist/' + req.body.type + '.txt', req.body.list.trim());
+	res.json({message: 'OK'});
+});
+
+/**
+ * Сохранение настроек
+ */
+app.get('/settings/', function (req, res) {
+	if(req.query.maxcon)   config.maxcon   = parseInt(req.query.maxcon);
+	if(req.query.maxpkts)  config.maxpkts  = parseInt(req.query.maxpkts);
+	if(req.query.maxsames) config.maxsames = parseInt(req.query.maxsames);
+	if(req.query.maxspeed) config.maxspeed = parseInt(req.query.maxspeed);
+	if(req.query.timeout)  config.timeout  = parseInt(req.query.timeout);
+	config.realip = req.query.realip ? true : false;
+	res.json({message: 'OK'});
+});
 
