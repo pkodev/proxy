@@ -182,7 +182,7 @@ var server = net.createServer(function (socket) {
 		 * 0002 - отправляется всегда, с кодом 11(17) когда перс в игре
 		 * @see SC_CheckPing, PC_Ping, SC_Ping
 		 */
-		if(hex === '0002' || info.code === 17) {
+		if(hex === '0002' || info.code === 17 || (info.size === 2 && info.signature === '')) {
 			
 			remote.write(data);
 			return;
@@ -829,13 +829,15 @@ var server = net.createServer(function (socket) {
  * Не расклеился пакет вида 0002 0008 8000 0000 0011
  */
 function getPacketInfo(hex) {
+	var size = parseInt(hex.substring(0, 4), 16);
+		hex  = hex.substring(0, size * 2);
 	var packet = {
-		size: parseInt(hex.substring(0, 4), 16),
+		size: size,
 		signature: hex.substring(4, 12),
-		code: parseInt(hex.substring(12, 16), 16) 
+		code: parseInt(hex.substring(12, 16), 16) || 0,
+		body: hex.substring(16, size * 2),
+		realsize: hex.length / 2
 	}
-		packet.body = hex.substring(16,packet.size * 2);
-		packet.realsize = packet.body.length / 2 + 8;
 	return packet;
 }
 
