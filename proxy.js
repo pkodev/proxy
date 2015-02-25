@@ -78,7 +78,7 @@ var server = net.createServer(function (socket) {
 	 * Блокировка по IP-адресу в момент соединения
 	 * @todo Попробовать вернуть сообщение
 	 */
-	if(denylist.ips[client.addr]) {
+	if(client.addr && denylist.ips[client.addr.toLowerCase()]) {
 		socket.end();
 		return sendMessage(client, 'BLACKLIST_IP', 'ERROR');
 	}
@@ -123,18 +123,18 @@ var server = net.createServer(function (socket) {
 		/**
 		 * Блокировки при установленном соединении
 		 * @todo Попробовать вернуть сообщение
-		 * @see Отдельные блокировки см. при разборе пакета авторизации
+		 * @see Также блокировки см. при разборе пакета авторизации
 		 */
-		if(denylist.ips[client.addr]) {
+		if(client.addr && denylist.ips[client.addr.toLowerCase()]) {
 			return closeConnection(socket, remote, client, 'BLACKLIST_IP', 'ERROR');
 		}
-		if(denylist.macs[client.mac]) {
+		if(client.mac && denylist.macs[client.mac.toLowerCase()]) {
 			return closeConnection(socket, remote, client, 'BLACKLIST_MAC', 'ERROR');
 		}
-		if(denylist.logins[client.login]) {
+		if(client.login && denylist.logins[client.login.toLowerCase()]) {
 			return closeConnection(socket, remote, client, 'BLACKLIST_LOGIN', 'ERROR');
 		}
-		if(denylist.chars[client.chaname]) {
+		if(client.chaname && denylist.chars[client.chaname.toLowerCase()]) {
 			return closeConnection(socket, remote, client, 'BLACKLIST_CHAR', 'ERROR');
 		}
 		/**
@@ -314,12 +314,10 @@ var server = net.createServer(function (socket) {
 					client.login = pkt.login.toLowerCase();
 					client.mac = pkt.mac;
 					
-					// Блокировка по mac-адресу @todo В клиенте не выскакивает окно о разрыве соединения...
-					if(denylist.macs[client.mac]) {
+					// Блокировка по mac-адресу и логину @todo В клиенте не выскакивает окно о разрыве соединения...
+					if(denylist.macs[client.mac.toLowerCase()]) {
 						return closeConnection(socket, remote, client, 'BLACKLIST_MAC', 'ERROR');
 					}
-					
-					// Блокировка по логину @todo В клиенте не выскакивает окно о разрыве соединения...
 					if(denylist.logins[client.login]) {
 						return closeConnection(socket, remote, client, 'BLACKLIST_LOGIN', 'ERROR');
 					}
@@ -456,10 +454,13 @@ var server = net.createServer(function (socket) {
 					}
 						
 					// Проверка формата имени
-					var re = /^[0-9a-zA-Z]{1,20}$/;
+					//var re = /^[0-9a-zA-Z]{1,20}$/;
+					var re = /^[^';]{1,20}$/;
 					if (!re.test(pkt.name)) {
-						//return closeConnection(socket, remote, client, 'INVALID_CHA_ENTER_FORMAT', 'ERROR');
+						return closeConnection(socket, remote, client, 'INVALID_CHA_ENTER_FORMAT', 'ERROR');
 					}
+					
+					sendMessage(client, 'CHA_ENTER', 'INFO');
 						
 					remote.write(data);
 					
@@ -853,13 +854,13 @@ function closeConnection(socket, remote, client, message, level) {
 function sendMessage(client, message, level) {
 	switch (level) {
 		case 'WARN':
-			logger.warn(message, client.login, client.addr, client.port, client.mac);
+			logger.warn(message, client.login, client.chaname, client.addr + ':' + client.port, client.mac);
 			break;
 		case 'ERROR':
-			logger.error(message, client.login, client.addr, client.port, client.mac);
+			logger.error(message, client.login, client.chaname, client.addr + ':' + client.port, client.mac);
 			break;
 		default:
-			logger.info(message, client.login, client.addr, client.port, client.mac);
+			logger.info(message, client.login, client.chaname, client.addr + ':' + client.port, client.mac);
 			break;
 	}
 	return true;
