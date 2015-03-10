@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html>
+<head> 
+	<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+	<title>PKO Proxy panel</title>
+	<link rel="stylesheet" href="http://maxcdn.bootstrapcdn.com/bootswatch/3.3.1/yeti/bootstrap.min.css" type="text/css" media="screen" />
+	<!--link rel="stylesheet" href="http://yastatic.net/bootstrap/3.3.1/css/bootstrap.min.css" type="text/css" media="screen" /-->
+	<script type="text/javascript" src="http://yandex.st/jquery/2.1.1/jquery.min.js"></script>
+	<script type="text/javascript" src="http://yastatic.net/bootstrap/3.3.1/js/bootstrap.min.js"></script>
+	<script type="text/javascript">
+		var vars = {
+			lastlogline: 0
+		}
+		var classes = {
+			ERROR: 'bg-danger',
+			INFO: 'bg-success',
+			WARN: 'bg-warning'
+		}
+		$(function(){
+			//...
+			drawLogLines();
+		
+			//...
+			setInterval(function(){ drawLogLines() },3000)
+			
+			//...
+			$('#logs li').on('click',function(){
+				$('#logs li').removeClass('active');
+				$(this).addClass('active');
+				$('#logs table tr:gt(0)').remove();
+				vars.lastlogline = 0;
+				drawLogLines();
+				return false;
+			})
+			
+			//...
+			$('#denylist button').on('click',function(){
+				var btn = $(this);
+				var rel = btn.attr('rel');
+				var txarea = $('textarea[name=' + rel + ']');
+				btn.attr('disabled',true);
+				$.post('/denylist/', { list: txarea.val(), type: rel }, function(data){
+					btn.attr('disabled',false);
+					alertBox('Изменения внесены','success');
+				})
+			})
+			
+			//...
+			$('#settings button').on('click',function(){
+				var btn = $(this);
+				btn.attr('disabled',true);
+				$.getJSON('/settings/?' + $('#settings form').serialize(),function(data){
+					btn.attr('disabled',false);
+					alertBox('Изменения внесены','success');
+				})
+				return false;
+			})
+		})
+		
+		function drawLogLines() {
+			$.getJSON($('#logs li.active a').attr('href') + vars.lastlogline + '/',function(data){
+				vars.lastlogline += data.length;
+				$.each(data, function(i,r){
+					$('#logs table tr:first').after(
+						$('<tr><td>' + r.date + '</td><td>' + r.type + '</td><td>' + r.message + '</td></tr>')
+							.addClass(classes[r.type])
+					);
+				})
+			})
+		}
+		
+		function alertBox(message,type) {
+			var box = $('.container.alert:first').clone().show().addClass('alert-' + type).html(message);
+			$('body > .container').append(box);
+			setTimeout(function () {  
+				box.remove();
+			}, 2000);
+		}
+	</script>
+	<style>
+		body {
+			font-size: 13px !important;
+			font-family: Arial !important;
+		}
+		textarea {
+			height: 400px !important;
+		}
+		input.form-control {
+			width: 120px !important;
+			margin-left: 10px;
+			display: inline;
+		}
+		.container.alert {
+			position: fixed;
+			top: -1px;
+			left: 50%;
+			margin-left: -240px;
+			z-index: 999;
+			width: 480px;
+			display: none;
+			border-top-right-radius: 0;
+			border-top-left-radius: 0;
+		}
+	</style>
+</head>
+<body>
+
+	<br />
+
+	<div class="container">
+		<div class="row-fluid">
+		
+			<div class="container alert" role="alert"></div>
+		
+			<ul class="nav nav-tabs" role="tablist">
+				<li role="presentation" class="active">
+					<a href="#logs" aria-controls="logs" role="tab" data-toggle="tab"><i class="glyphicon glyphicon-list"></i> Логи</a>
+				</li>
+				<li role="presentation">
+					<a href="#denylist" aria-controls="denylist" role="tab" data-toggle="tab"><i class="glyphicon glyphicon-remove-circle"></i> Блокировки</a>
+				</li>
+				<li role="presentation">
+					<a href="#settings" aria-controls="settings" role="tab" data-toggle="tab"><i class="glyphicon glyphicon-cog"></i> Настройки</a>
+				</li>
+			</ul>
+			
+			<br />
+			
+			<div class="tab-content">
+			
+				<div role="tabpanel" class="tab-pane active" id="logs">
+				
+					<div class="col-md-12">
+						<ul class="nav nav-pills">
+							{% for log in logs %}
+								<li {% if log=="proxy.log" %}class="active"{% endif %}>
+									<a href="/log/{{log}}/">{% if log=="proxy.log" %}Текущий{% else %}{{log|replace('proxy.log-', '')}}{% endif %}</a>
+								</li>
+							{% endfor %}
+						</ul>
+						<br />
+						<table class="table">
+							<tr class="bg-primary">
+								<th width="20%">Дата/время</th>
+								<th width="10%">Тип</th>
+								<th>Сообщение</th>
+							</tr>
+						</table>
+					</div>
+				
+				</div>
+				
+				<div role="tabpanel" class="tab-pane" id="denylist">
+				
+					<p class="alert alert-info"><i class="glyphicon glyphicon-info-sign"></i> Записи необходимо вносить по одной на строку</p>
+				
+					<div class="col-md-3">
+						<h3>имена входа</h3>
+						<p><textarea class="form-control" name="logins">{{denylist.logins}}</textarea></p>
+						<p class="text-center"><button class="btn btn-success" rel="logins"><i class="glyphicon glyphicon-save"></i> Сохранить</button></p>
+					</div>
+				
+					<div class="col-md-3">
+						<h3>имена игроков</h3>
+						<p><textarea class="form-control" name="chars">{{denylist.chars}}</textarea></p>
+						<p class="text-center"><button class="btn btn-success" rel="chars"><i class="glyphicon glyphicon-save"></i> Сохранить</button></p>
+					</div>
+				
+					<div class="col-md-3">
+						<h3>ip-адреса</h3>
+						<p><textarea class="form-control" name="ips">{{denylist.ips}}</textarea></p>
+						<p class="text-center"><button class="btn btn-success" rel="ips"><i class="glyphicon glyphicon-save"></i> Сохранить</button></p>
+					</div>
+					
+					<div class="col-md-3">
+						<h3>mac-адреса</h3>
+						<p><textarea class="form-control" name="macs">{{denylist.macs}}</textarea></p>
+						<p class="text-center"><button class="btn btn-success" rel="macs"><i class="glyphicon glyphicon-save"></i> Сохранить</button></p>
+					</div>
+				
+				</div>
+				
+				<div role="tabpanel" class="tab-pane" id="settings">
+				
+					<p class="alert alert-info"><i class="glyphicon glyphicon-info-sign"></i> Настройки сохраняются только для текущего состояния сервера и после перезапуска будут утеряны. Для постоянного сохранения их необходимо продублировать в файле config.json</p>
+				
+					<form>
+						<div class="form-group">
+							<label for="maxcon">Максимальное кол-во соединений с одного IP</label>
+							<input type="text" class="form-control" name="maxcon" value="{{settings.maxcon}}" />
+						</div>
+						<div class="form-group">
+							<label for="maxpkts">Максимальное кол-во пакетов в секунду</label>
+							<input type="text" class="form-control" name="maxpkts" value="{{settings.maxpkts}}" />
+						</div>
+						<div class="form-group">
+							<label for="maxspeed">Максимальная пропускная способность Bytes/sec (не рекомендуется ставить выше 5120)</label>
+							<input type="text" class="form-control" name="maxspeed" value="{{settings.maxspeed}}" />
+						</div>
+						<div class="form-group">
+							<label for="maxsames">Максимальное кол-во пакетов одного типа в секунду (для пакета перемещения будет установлено х3)</label>
+							<input type="text" class="form-control" name="maxsames" value="{{settings.maxsames}}" />
+						</div>
+						<div class="form-group">
+							<label for="timeout">Время ожидания пакета авторизации после установки соединения в сек.</label>
+							<input type="text" class="form-control" name="timeout" value="{{settings.timeout}}" />
+						</div>
+						<div class="checkbox">
+							<label>
+								<input type="checkbox" name="realip" {% if settings.realip %}checked{% endif %}> Добавлять реальный ip-адрес к mac-адресу
+							</label>
+						</div>
+						<button class="btn btn-success"><i class="glyphicon glyphicon-save"></i> Сохранить</button>
+					</form>
+				
+				</div>
+			
+			</div>
+			
+		</div>
+	</div>
+
+</body>
+</html>
