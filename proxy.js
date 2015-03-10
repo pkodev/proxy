@@ -189,13 +189,13 @@ var server = net.createServer(function (socket) {
 			
 		/**
 		 * Пакет закрытия соединения
-		 * Просто закрываем соединение без отправки пакета (т.е. эмулируем закрытие окна клиента). Теоретически, это должно исключить дюпы при ТП
-		 * @todo Надо протестировать
+		 * Просто отправляем пакет и закрываем соединение
 		 */
 		} else if (info.signature === '00000001') {
 			
-			//remote.write(data);
-			return closeConnection(socket, remote, client, 'LOGOUT', 'INFO');
+			remote.write(data);
+			return sendMessage(client, 'LOGOUT', 'INFO');
+			//return closeConnection(socket, remote, client, 'LOGOUT', 'INFO'); // Просто закрываем соединение без отправки пакета
 			
 		/**
 		 * Левые пакеты
@@ -218,40 +218,12 @@ var server = net.createServer(function (socket) {
 			}
 
 			/**
-			 * Проверяем, что код пакета находится в списке разрешенных
+			 * @todo Проверяем, что код пакета находится в списке разрешенных
 			 */
-			/*
-				191		Создание гильдии (отправка названия и пароля) - Это последний занесенный
-				1900	Гм чат
-				1901	Торговый чат
-				1902	Мир чат
-				1903	ЛС
-				1904	Пати чат
-				1905	Гильд чат
-				1906	Создание сессии
-				1907	Сообщение в сессиию @see CS_Sess_Say
-				1908	Добавление сессии
-				1909	Покинуть сессию
-				1771	Приглашение в отряд
-				1772	Принятие приглашения в отряд
-				1773	Отмена приглашения в отряд
-				1774	Покинуть отряд
-				1775	Кикнуть из отряда
-				177B	Приглашение в друзья
-				177C	Принятие приглашения в друзья
-				177D	Отмена приглашения в друзья
-				177E	Удалить из друзей
-				1780	Информация о друге
-				1781	Изменить перс. инфо (motto, icon)
-			*/
 			
 			/**
 			 * Проверяем частоту передачи пакетов одного типа в сек
 			 * У пакета действий определяем поддействие
-			 * 0100 - перемещение
-			 * 0202 - атака
-			 * 0c00 - перемещение предметов в инвентаре
-			 * 0b00 - использование предмета из инвентаря
 			 */
 			var pcode = info.code;
 			var limit = config.maxsames;
@@ -431,8 +403,7 @@ var server = net.createServer(function (socket) {
 				/**
 				 * Вход на персонажа
 				 * xxxx xxxx 0014 8000 0000 01b1 000a 4265  .6J...........Be
-				 * 7461 5465 7374 3300                      taTest3.
-				 * @todo Поставить более мягкую проверку для возможности изменения имени через базу (напр. [GM]Вася)
+				 * 7461 5465 7374 3300                      taTest3.)
 				 */
 				case 433:
 					
@@ -512,7 +483,6 @@ var server = net.createServer(function (socket) {
 				 * 6e64 0000 2145 3130 4144 4333 3934 3942  nd..!E10ADC3949B
 				 * 4135 3941 4242 4535 3645 3035 3746 3230  A59ABBE56E057F20
 				 * 4638 3833 4500                           F883E.
-				 * @todo Поставить более мягкую проверку для возможности изменения имени через базу (напр. [GM]Вася)
 				 */
 				case 436:
 				
@@ -535,7 +505,8 @@ var server = net.createServer(function (socket) {
 					}
 					
 					// Проверка формата имени
-					var re = /^[0-9A-Za-z]{1,20}$/;
+					//var re = /^[0-9A-Za-z]{1,20}$/;
+					var re = /^[^';]{1,20}$/;
 					if (!re.test(pkt.name)) {
 						return closeConnection(socket, remote, client, 'INVALID_DELCHA_NAME_FORMAT', 'ERROR');
 					}
@@ -572,6 +543,11 @@ var server = net.createServer(function (socket) {
 						return closeConnection(socket, remote, client, 'INVALID_SKILL_LVL', 'ERROR');
 					}
 					
+					// Id скила не может быть больше 500
+					if (pkt.skid > 500) {
+						return closeConnection(socket, remote, client, 'INVALID_SKILL_ID', 'ERROR');
+					}
+					
 					// Блочим изучение скилов в обход книг
 					// Место, Посешн, РБ-скилы, Самоуничтожение, Кулинария, Анализ, Производство, Ремесло
 					switch (pkt.skid) {
@@ -589,16 +565,22 @@ var server = net.createServer(function (socket) {
 				 * Создание гильдии
 				 * xxxx xxxx 0017 8000 0000 0191 0100 0554  ...U...........T
 				 * 6573 7400 0005 7465 7374 00              est...test.
-				 * @todo При создании перса лимит пароля 8 символов, при роспуске 12
+				 * @todo При создании гильдии лимит пароля 8 символов, при роспуске 12
 				 * Проходит любой пароль кроме символов ' и ; (т.е. пароль фильтруется по умолчанию)
-				 * @todo Проверить, достаточно ли фильтрации только имени гильдии
+				 * Пароль не фильтруется на клиенте поэтому возвращаем нотис
 				 */
 				case 401:
 					
 					// Разбор пакета
+					var shift = 0;
 					var pkt = { 
-						nsize: parseInt(info.body.substring(0, 4), 16) * 2 };
-						pkt.name = hex2str(info.body.substring(4, 4 + pkt.nsize - 2));
+						nsize: parseInt(info.body.substring(shift, 4), 16) * 2 };
+							shift += 4;
+						pkt.name = hex2str(info.body.substring(shift, shift + pkt.nsize - 2));
+							shift += pkt.nsize;
+						pkt.psize = parseInt(info.body.substring(shift, shift + 4), 16) * 2;
+							shift += 4;
+						pkt.passw = hex2str(info.body.substring(shift, shift + pkt.psize - 2));
 						
 					// Проверка заявленных длин реальным
 					if (pkt.nsize/2-1 !== pkt.name.length) {
@@ -610,6 +592,13 @@ var server = net.createServer(function (socket) {
 					if (!re.test(pkt.name)) {
 						return closeConnection(socket, remote, client, 'INVALID_GUILD_NEW_NAME_FORMAT', 'ERROR');
 					}
+					
+					// Проверка формата пароля 
+					var re = /^[^';]{1,12}$/;
+					if (!re.test(pkt.passw)) {
+						sendNotice(socket, 'Invalid characters in password');
+						return sendMessage(client, 'INVALID_GUILD_NEW_PASSWORD_FORMAT', 'ERROR');
+					}
 						
 					remote.write(data);
 					
@@ -620,7 +609,7 @@ var server = net.createServer(function (socket) {
 				 * xxxx xxxx 0017 8000 0000 0199 000d 3132  ..]o..........12
 				 * 3334 3536 3738 3930 3132 00              3456789012.
 				 * @todo При создании гильдии лимит пароля 8 символов, при роспуске 12
-				 * @todo Сделать возврат сообщения вместо разрыва соединения
+				 * Пароль не фильтруется на клиенте поэтому возвращаем нотис
 				 */
 				case 409:
 					
@@ -637,7 +626,8 @@ var server = net.createServer(function (socket) {
 					// Проверка формата пароля 
 					var re = /^[^';]{1,12}$/;
 					if (!re.test(pkt.passw)) {
-						return closeConnection(socket, remote, client, 'INVALID_GUILD_DEL_PASSW_FORMAT', 'ERROR');
+						sendNotice(socket, 'Invalid characters in password');
+						return sendMessage(client, 'INVALID_GUILD_DEL_PASSW_FORMAT', 'ERROR');
 					}
 						
 					remote.write(data);
@@ -869,10 +859,33 @@ function sendMessage(client, message, level) {
 }
 
 /**
- * Конвертирует число в int32 hex
+ * Отправляет Notice клиенту
+ * xxxx xxxx 0013 8000 0000 0205 0009 5465  ...&..........Te
+ * 7374 5465 7374 00                        stTest.
+ * @todo Добавить поддержку русского языка
+ */
+function sendNotice(socket, message) {
+	var hex = '80000000'
+			+ int2hex(517)
+			+ int2hex(message.length)
+			+ str2ascii(message)
+			+ '00';
+	hex = int2hex(hex.length / 2 + 2) + hex;
+	socket.write(new Buffer(hex, 'hex'));
+}
+
+/**
+ * Конвертирует число в int16 hex
  */
 function int2hex(int) {
 	return String('0000' + (int).toString(16)).slice(-4);
+}
+
+/**
+ * Конвертирует число в int8 hex
+ */
+function int82hex(int) {
+	return String('00' + (int).toString(16)).slice(-2);
 }
 
 /**
@@ -887,6 +900,29 @@ function hex2str(hex) {
  */
 function str2hex(str) {
 	return new Buffer(str).toString('hex');
+}
+
+/**
+ * Конвертирует utf в ascii-строку и возвращает ее в hex
+ */
+function str2ascii(str) {
+	var codes = {
+		'ё': 184, 'й': 233, 'ц': 246, 'у': 243, 'к': 234, 'е': 229, 'н': 237, 'г': 227, 'ш': 248, 'щ': 249, 'з': 231, 
+		'х': 245, 'ъ': 250, 'ф': 244, 'ы': 251, 'в': 226, 'а': 224, 'п': 239, 'р': 240, 'о': 238, 'л': 235, 'д': 228, 
+		'ж': 230, 'э': 253, 'я': 255, 'ч': 247, 'с': 241, 'м': 236, 'и': 232, 'т': 242, 'ь': 252, 'б': 225, 'ю': 254,
+		'Ё': 168, 'Й': 201, 'Ц': 214, 'У': 211, 'К': 202, 'Е': 197, 'Н': 205, 'Г': 195, 'Ш': 216, 'Щ': 217, 'З': 199, 
+		'Х': 213, 'Ъ': 218, 'Ф': 212, 'Ы': 219, 'В': 194, 'А': 192, 'П': 207, 'Р': 208, 'О': 206, 'Л': 203, 'Д': 196, 
+		'Ж': 198, 'Э': 221, 'Я': 223, 'Ч': 215, 'С': 209, 'М': 204, 'И': 200, 'Т': 210, 'Ь': 220, 'Б': 193, 'Ю': 222
+	}
+	var new_str = []
+	for(i=0;i<str.length;i++) {
+		if(codes[str[i]]) {
+			new_str.push(int82hex(codes[str[i]]))
+		} else {
+			new_str.push(str2hex(str[i]))
+		}
+	}
+	return new_str.join('');
 }
 
 /**
@@ -927,7 +963,7 @@ var postParser = bodyParser.urlencoded({ extended: false })
 app.engine('html', swig.renderFile);
 app.set('view engine', 'html');
 app.set('views', __dirname + '/views');
-app.set('view cache', false);
+app.set('view cache', true);
 swig.setDefaults({ cache: false });
 
 app.listen(3000, '127.0.0.1', function () {
@@ -938,7 +974,7 @@ app.listen(3000, '127.0.0.1', function () {
  * Главная страница
  */
 app.get('/', function (req, res) {
-	res.render('index', { 
+	res.render(config.lang, { 
 		settings: config,
 		denylist: {
 			logins: fs.readFileSync(__dirname + '/denylist/logins.txt', { encoding: 'utf8' }),
