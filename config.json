@@ -1,16 +1,19 @@
 {
+	"//": "ProxyServer",
 	"local": {
 		"host": "0.0.0.0",
 		"port": 1973
 	},
+	"//": "GateServer",
 	"remote": {
 		"host": "192.168.0.100",
 		"port": 1973
 	},
-	"realip":	true, 	"//": "Добавлять реальный ip-адрес к mac-адресу (true) или нет (false)",
-	"maxcon":	4,  	"//": "Максимальное кол-во соединений с одного IP",
-	"maxpkts":	64, 	"//": "Максимальное кол-во пакетов в секунду",
-	"maxspeed":	5120, 	"//": "Максимальная пропускная способность Bytes/sec. Не рекомендуется ставить выше 5120",
-	"maxsames":	3,  	"//": "Максимальное кол-во пакетов одного типа в секунду",
-	"timeout":	5,  	"//": "Время ожидания пакета авторизации после установки соединения в сек."
+	"realip":	true, 	"//": "Add real ip address to mac address string (true) or not (false)",
+	"maxcon":	4,  	"//": "The maximum number of connections from the same IP",
+	"maxpkts":	64, 	"//": "The maximum number of packets per second",
+	"maxspeed":	5120, 	"//": "The maximum bandwidth Bytes/sec. It is not recommended to put above 5120",
+	"maxsames":	3,  	"//": "The maximum number of packets of the same type in the second",
+	"timeout":	5,  	"//": "Timeout for authorization packet, sec",
+	"lang": 	"en",	"//": "Web panel language. ru - Russian, en - English"
 } 
